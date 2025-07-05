@@ -126,7 +126,7 @@ class StereoDataset(data.Dataset):
 
 
 class SceneFlowDatasets(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/StereoDatasets/sceneflow', dstype='frames_finalpass', things_test=False):
+    def __init__(self, aug_params=None, root='/DATA/i2r/guzw/dataset/sttr/sceneflow', dstype='frames_finalpass', things_test=False):
         super(SceneFlowDatasets, self).__init__(aug_params)
         assert os.path.exists(root)
         self.root = root
@@ -160,10 +160,10 @@ class SceneFlowDatasets(StereoDataset):
 
         original_length = len(self.disparity_list)
         root = self.root
-        # left_images = sorted( glob(osp.join(root, self.dstype, split, '*/left/*.png')) )
-        # right_images = [ image_file.replace('left', 'right') for image_file in left_images ]
-        right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
-        left_images = [ im.replace('right', 'left') for im in right_images ]
+        left_images = sorted( glob(osp.join(root, self.dstype, split, '*/left/*.png')) )
+        right_images = [ image_file.replace('left', 'right') for image_file in left_images ]
+        # right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
+        # left_images = [ im.replace('right', 'left') for im in right_images ]
         disparity_images = [ im.replace(self.dstype, 'disparity').replace('.png', '.pfm') for im in left_images ]
 
         for img1, img2, disp in zip(left_images, right_images, disparity_images):
@@ -177,10 +177,10 @@ class SceneFlowDatasets(StereoDataset):
 
         original_length = len(self.disparity_list)
         root = self.root
-        # left_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/*/left/*.png')) )
-        # right_images = [ image_file.replace('left', 'right') for image_file in left_images ]
-        right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
-        left_images = [ im.replace('right', 'left') for im in right_images ]
+        left_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/*/left/*.png')) )
+        right_images = [ image_file.replace('left', 'right') for image_file in left_images ]
+        # right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
+        # left_images = [ im.replace('right', 'left') for im in right_images ]
         disparity_images = [ im.replace(self.dstype, 'disparity').replace('.png', '.pfm') for im in left_images ]
 
         for img1, img2, disp in zip(left_images, right_images, disparity_images):
@@ -253,16 +253,16 @@ class TartanAir(StereoDataset):
             self.disparity_list += [ disp ]
 
 class KITTI(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/StereoDatasets/kitti/2015', image_set='training'):
+    def __init__(self, aug_params=None, root='./kitti/2015', image_set='training'):
         super(KITTI, self).__init__(aug_params, sparse=True, reader=frame_utils.readDispKITTI)
         assert os.path.exists(root)
 
-        root_12 = '/data2/cjd/StereoDatasets/kitti/2012/'
+        root_12 = '/DATA/i2r/guzw/dataset/kitti/KITTI_2012'
         image1_list = sorted(glob(os.path.join(root_12, image_set, 'colored_0/*_10.png')))
         image2_list = sorted(glob(os.path.join(root_12, image_set, 'colored_1/*_10.png')))
         disp_list = sorted(glob(os.path.join(root_12, 'training', 'disp_occ/*_10.png'))) if image_set == 'training' else [osp.join(root, 'training/disp_occ/000085_10.png')]*len(image1_list)
 
-        root_15 = '/data2/cjd/StereoDatasets/kitti/2015/'
+        root_15 = '/DATA/i2r/guzw/dataset/kitti/KITTI_2015'
         image1_list += sorted(glob(os.path.join(root_15, image_set, 'image_2/*_10.png')))
         image2_list += sorted(glob(os.path.join(root_15, image_set, 'image_3/*_10.png')))
         disp_list += sorted(glob(os.path.join(root_15, 'training', 'disp_occ_0/*_10.png'))) if image_set == 'training' else [osp.join(root, 'training/disp_occ_0/000085_10.png')]*len(image1_list)

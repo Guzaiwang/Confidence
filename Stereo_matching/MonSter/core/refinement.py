@@ -431,6 +431,84 @@ class REMP(nn.Module):
 
         return disp_stereo
 
+class REMP_evidential(nn.Module):
+    """Height and width need to be divided by 16"""
+
+    def __init__(self):
+        super(REMP_evidential, self).__init__()
+
+        # Left and warped flaw
+        in_channels = 6
+        channel =32
+        self.conv1_mono = conv2d(in_channels, 16)
+        self.conv1_stereo = conv2d(in_channels, 16)
+        self.conv2_mono = conv2d(1, 16)  # on low disparity
+        self.conv2_stereo = conv2d(1, 16)  # on low disparity
+
+        self.conv_start = BasicConv_now(64, channel, kernel_size=3, padding=2, dilation=2)
+
+        self.RefinementBlock = Simple_UNet(in_channels=channel)#, in_channels
+
+        self.AP = nn.AdaptiveAvgPool2d(1)
+        self.LFE = nn.Sequential(
+            nn.Conv2d(channel, channel * 2, 1, padding=0, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channel * 2, channel, 1, padding=0, bias=True),
+            nn.Sigmoid()
+        )
+        self.LMC = nn.Sequential(
+            default_conv(channel, channel, 3),
+            default_conv(channel, channel * 2, 3),
+            nn.ReLU(inplace=True),
+            default_conv(channel * 2, channel, 3),
+            nn.Sigmoid()
+        )
+
+        self.final_conv = nn.Conv2d(32, 1, 3, 1, 1)
+        self.final_conv_la = nn.Conv2d(32, 1, 3, 1, 1)
+        self.final_conv_alpha = nn.Conv2d(32, 1, 3, 1, 1)
+        self.final_conv_beta = nn.Conv2d(32, 1, 3, 1, 1)
+
+    def forward(self, disp_mono, disp_stereo, left_img, right_img):
+
+        assert disp_mono.dim() == 4
+        assert disp_stereo.dim() == 4
+
+        warped_right_mono = disp_warp(right_img, disp_mono)[0]  # [B, 3, H, W]
+        flaw_mono = warped_right_mono - left_img  # [B, 3, H, W]
+
+        warped_right_stereo = disp_warp(right_img, disp_stereo)[0]  # [B, 3, H, W]
+        flaw_stereo = warped_right_stereo - left_img  # [B, 3, H, W]
+
+        ref_flaw_mono = torch.cat((flaw_mono, left_img), dim=1)  # [B, 6, H, W]
+        ref_flaw_stereo = torch.cat((flaw_stereo, left_img), dim=1)  # [B, 6, H, W]
+
+
+        ref_flaw_mono = self.conv1_mono(ref_flaw_mono)  # [B, 16, H, W]
+        ref_flaw_stereo = self.conv1_stereo(ref_flaw_stereo)  # [B, 16, H, W]
+
+
+        disp_fea_mono = self.conv2_mono(disp_mono)  # [B, 16, H, W]
+        disp_fea_stereo = self.conv2_stereo(disp_stereo)  # [B, 16, H, W]
+
+        x = torch.cat((ref_flaw_mono, disp_fea_mono, ref_flaw_stereo, disp_fea_stereo), dim=1)  # [B, 64, H, W]
+        x = self.conv_start(x)  # [B, 32, H, W]
+        x = self.RefinementBlock(x) # [B, 32, H, W]
+
+        low = self.LFE(self.AP(x))
+        motif = self.LMC(x)
+        x = torch.mul((1 - motif), low) + torch.mul(motif, x)
+
+        x_res = self.final_conv(x)  # [B, 4, H, W]
+        logv = self.final_conv_la(x)
+        logalpha = self.final_conv_alpha(x)
+        logbeta = self.final_conv_beta(x)
+        disp_stereo = nn.LeakyReLU()(disp_stereo + x_res)  # [B, 1, H, W]
+
+        return disp_stereo, logv, logalpha, logbeta
+
+
+
 class Simple_UNet_8x(nn.Module):
     def __init__(self, in_channels):
         super(Simple_UNet_8x, self).__init__()
