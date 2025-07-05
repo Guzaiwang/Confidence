@@ -288,7 +288,12 @@ class Monster(nn.Module):
         self.corr_stem = BasicConv(8, 8, is_3d=True, kernel_size=3, stride=1, padding=1)
         self.corr_feature_att = FeatureAtt(8, 96)
         self.cost_agg = hourglass(8)
+        # output channel is 4, including [u, la, alpha, beta]
+        # self.classifier = nn.Conv3d(8, 1, 3, 1, 1, bias=False)
         self.classifier = nn.Conv3d(8, 1, 3, 1, 1, bias=False)
+        self.classifier1 = nn.Conv3d(8, 1, 3, 1, 1, bias=False)
+        self.classifier2 = nn.Conv3d(8, 1, 3, 1, 1, bias=False)
+        self.classifier3 = nn.Conv3d(8, 1, 3, 1, 1, bias=False)
 
         depth_anything = DepthAnythingV2(**mono_model_configs[args.encoder])
         depth_anything_decoder = DepthAnythingV2_decoder(**mono_model_configs[args.encoder])
@@ -350,18 +355,25 @@ class Monster(nn.Module):
     
     def evidence(self, x):
         # return tf.exp(x)
-        return F.softplus(torch.clamp(x, min=-50, max=50))
+        return F.softplus(x)
 
     def get_uncertainty(self, logv, logalpha, logbeta):
         v = self.evidence(logv)
         alpha = self.evidence(logalpha) + 1
         beta = self.evidence(logbeta)
 
-        v = torch.clamp(v, min=1e-10)
-        alpha = torch.clamp(alpha, min=1e-10)
-        beta = torch.clamp(beta, min=1e-10)
+        # v = torch.clamp(v, min=1e-10)
+        # alpha = torch.clamp(alpha, min=1e-10)
+        # beta = torch.clamp(beta, min=1e-10)
         return v, alpha, beta
 
+    def moe_nig(self, u1, la1, alpha1, beta1, u2, la2, alpha2, beta2):
+        la = la1 + la2
+        u = (la1 * u1 + u2 * la2) / la
+        alpha = alpha1 + alpha2 + 0.5
+        beta = beta1 + beta2 + 0.5 * \
+            (la1 * (u1 - u) ** 2 + la2 * (u2 - u) ** 2)
+        return u, la, alpha, beta
 
     def forward(self, image1, image2, iters=12, flow_init=None, test_mode=False):
         """ Estimate disparity between pair of frames """
@@ -397,16 +409,39 @@ class Monster(nn.Module):
         geo_encoding_volume = self.cost_agg(gwc_volume, features_left)
 
         # Init disp from geometry encoding volume
-        prob = F.softmax(self.classifier(geo_encoding_volume).squeeze(1), dim=1)
+        cost0 = self.classifier(geo_encoding_volume)
+        logla0 = self.classifier1(geo_encoding_volume)
+        logalpha0 = self.classifier2(geo_encoding_volume)
+        logbeta0 = self.classifier3(geo_encoding_volume)
+
+        def get_logits(cost, prob):
+            # print("prob size,", prob.size())
+            cost_upsample = F.upsample(cost, [self.args.max_disp//4, image1.size()[2]//4, image1.size()[
+                3]//4], mode='trilinear', align_corners=True)
+            cost_upsample = torch.squeeze(cost_upsample, 1)
+            pred = torch.sum(cost_upsample * prob, 1, keepdim=False)
+            return pred
+
+        prob = F.softmax(cost0.squeeze(1), dim=1)
+        # print("prob size is", prob.size())
         init_disp = disparity_regression(prob, self.args.max_disp//4)
+
+        logla0 = get_logits(logla0, prob).unsqueeze(1)
+        logalpha0 = get_logits(logalpha0, prob).unsqueeze(1)
+        logbeta0 = get_logits(logbeta0, prob).unsqueeze(1)
+
+        la0, alpha0, beta0 = self.get_uncertainty(logla0, logalpha0, logbeta0)
+        # print("la0 size", la0.size())
+        # print("alpha0 size", alpha0.size())
+        # print("beta0 size", beta0.size())
         
         del prob, gwc_volume
 
-        if not test_mode:
-            xspx = self.spx_4(features_left[0])
-            xspx = self.spx_2(xspx, stem_2x)
-            spx_pred = self.spx(xspx)
-            spx_pred = F.softmax(spx_pred, 1)
+
+        xspx = self.spx_4(features_left[0])
+        xspx = self.spx_2(xspx, stem_2x)
+        spx_pred = self.spx(xspx)
+        spx_pred = F.softmax(spx_pred, 1)
 
         # cnet_list = self.cnet(image1, num_layers=self.args.n_gru_layers)
         cnet_list = self.feat_transfer_cnet(features_mono_left, stem_x_list)
@@ -459,19 +494,29 @@ class Monster(nn.Module):
 
             if itr == iters - 1:
                 refine_value, logv, logalpha, logbeta = self.REMP(disp_mono_4x_up, disp_up, image1, image2)
-                v = self.evidence(logv)
-                alpha = self.evidence(logalpha) + 1
-                beta = self.evidence(logbeta)
-
-                v = torch.clamp(v, min=1e-10)
-                alpha = torch.clamp(alpha, min=1e-10)
-                beta = torch.clamp(beta, min=1e-10)
-
+                la1 = self.evidence(logv)
+                alpha1 = self.evidence(logalpha) + 1
+                beta1 = self.evidence(logbeta)
                 disp_up = disp_up + refine_value
-            disp_preds.append(disp_up)
 
-        if test_mode:
-            return disp_up, v, alpha, beta
+
+            disp_preds.append(disp_up)
+            
 
         init_disp = context_upsample(init_disp*4., spx_pred.float()).unsqueeze(1)
-        return init_disp, disp_preds, depth_mono, v, alpha, beta
+        # print("la0 size", la0.size())
+        # print("alpha0 size", alpha0.size())
+        # print("beta0 size", beta0.size())
+
+        # print("la1 size is", la1.size())
+        # print("alpha1 size is", alpha1.size())
+        # print("beta1 size is", beta1.size())
+        la0 = F.upsample(la0, [la1.size()[2], la1.size()[3]], mode= 'bilinear', align_corners=True)
+        alpha0 = F.upsample(alpha0, [alpha1.size()[2], alpha1.size()[3]],mode= 'bilinear', align_corners=True)
+        beta0 = F.upsample(beta0, [beta1.size()[2], beta1.size()[3]], mode= 'bilinear',align_corners=True)
+
+        u, la, alpha, beta = self.moe_nig(init_disp, la0, alpha0, beta0, disp_up, la1, alpha1, beta1)
+
+        if test_mode:
+            return disp_up, la, alpha, beta
+        return init_disp, disp_preds, depth_mono, la, alpha, beta
